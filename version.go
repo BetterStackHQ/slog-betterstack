@@ -6,7 +6,7 @@ const name = "BetterStackHQ/slog-betterstack"
 
 // version is the latest released version and is sent in the "logger.version" field of every
 // record. The Release workflow bumps it and tags the commit, so edit it only there.
-const version = "1.4.4"
+const version = "1.5.0"
 
 // userAgent identifies the library and its version in every request, like the other Better
 // Stack clients do.
