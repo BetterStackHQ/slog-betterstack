@@ -1,59 +1,198 @@
+# Releases this Go module from GitHub Actions, the way the other Better Stack client libraries
+# release (logtail-js, logtail-python, logtail-ruby). A Go module has no registry to upload to: a
+# release is a "vX.Y.Z" tag on this repository, which the Go module proxy (proxy.golang.org) and
+# pkg.go.dev pick up the first time somebody asks for that version. The workflow asks for it
+# itself, so the version is cached and indexed right after the release rather than on the first
+# user's `go get`.
+#
+# Repository settings this relies on: the GitHub Actions app must be able to push to main, either
+# because main is unprotected or because the app is among the actors allowed to bypass the pull
+# request requirement, since the version commit and the tag are pushed by the workflow.
+#
+# Release: Actions → Release → Run workflow from main, pick patch or minor. The workflow runs the
+# tests, bumps the version in version.go, builds, commits "vX.Y.Z", tags it, pushes both, creates a
+# GitHub release with auto-generated notes for the tag and fetches the version through the Go
+# module proxy; edit the notes afterwards if needed.
+#
+# Retry: if a release failed after the version commit was pushed, run "retry" from main. It bumps
+# nothing, checks out the tag of the version in version.go and finishes the release from there: the
+# GitHub release is created if it is still missing and the proxy is asked again. Running patch or
+# minor again would release the next version instead.
+#
+# Dry run: bumps in place without committing and builds; nothing is pushed or published. Every push
+# that touches this file is a dry run, so a change to the workflow proves itself on its pull request
+# before it reaches main. A dry run can also be dispatched from any branch.
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
-      semver:
-        type: string
-        description: 'Semver (eg: v1.2.3)'
+      release:
+        description: "patch or minor: bump, tag and publish. retry: finish a release that failed halfway."
+        type: choice
+        options: [patch, minor, retry]
         required: true
+      dry_run:
+        description: "Dry run: bump and build, publish nothing"
+        type: boolean
+        default: false
+  push:
+    paths:
+      - .github/workflows/release.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  DRY_RUN: ${{ github.event_name == 'push' || inputs.dry_run }}
+  RELEASE: ${{ inputs.release || 'patch' }}
+  MODULE: github.com/BetterStackHQ/slog-betterstack
 
 jobs:
-  release:
-    if: github.triggering_actor == 'samber'
-    runs-on: ubuntu-latest
+  verify:
+    name: Test
+    runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-    - name: Set up Go
-      uses: actions/setup-go@v7
-      with:
-        go-version: 1.21
-        stable: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
 
-    - name: Test
-      run: make test
+      - name: Run tests
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
 
-    # remove tests in order to clean dependencies
-    - name: Remove xxx_test.go files
-      run: rm -rf *_test.go ./examples ./images
+  build:
+    name: Bump and tag
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # pushes the version commit and the tag
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
-    - name: Set library version in version.go
-      run: sed -i 's/VERSION/${{ inputs.semver }}/g' version.go
+    steps:
+      - name: Releases run from main only
+        if: ${{ env.DRY_RUN != 'true' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::Dispatch the release from main, not from $GITHUB_REF_NAME."
+          exit 1
 
-    # cleanup test dependencies
-    - name: Cleanup dependencies
-      run: go mod tidy
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the version check looks at the tags on HEAD
 
-    - name: List files
-      run: tree -Cfi
-    - name: Write new go.mod into logs
-      run: cat go.mod
-    - name: Write new go.sum into logs
-      run: cat go.sum
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
 
-    - name: Create tag
-      run: |
-          git config --global user.name '${{ github.triggering_actor }}'
-          git config --global user.email "${{ github.triggering_actor}}@users.noreply.github.com"
+      - name: Bump version
+        id: version
+        run: |
+          python3 - <<'EOF'
+          import os, re, subprocess, sys
 
-          git add .
-          git commit --allow-empty -m 'bump ${{ inputs.semver }}'
-          git tag ${{ inputs.semver }}
-          git push origin ${{ inputs.semver }}
+          release, dry_run = os.environ["RELEASE"], os.environ.get("DRY_RUN") == "true"
+          path = "version.go"
+          source = open(path).read()
+          match = re.search(r'const version = "(\d+\.\d+\.\d+)"', source)
+          if not match:
+              sys.exit(f"no version constant in {path}")
+          current = match.group(1)
+          tags = subprocess.run(["git", "tag", "--points-at", "HEAD"], capture_output=True, text=True, check=True).stdout.split()
+          tagged = f"v{current}" in tags
 
-    - name: Release
-      uses: softprops/action-gh-release@v3
-      with:
-        name: ${{ inputs.semver }}
-        tag_name: ${{ inputs.semver }}
+          if release == "retry":
+              # main may have moved on since the version commit, so build what the tag points at
+              exists = subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/tags/v{current}"], capture_output=True).returncode == 0
+              if not exists:
+                  sys.exit(f"retry only finishes a release whose version v{current} is tagged")
+              subprocess.run(["git", "checkout", "-q", f"v{current}"], check=True)
+              version = current
+          else:
+              if tagged and not dry_run:
+                  sys.exit(f"HEAD is already released as v{current}, there is nothing new to release")
+              major, minor, patch = map(int, current.split("."))
+              version = f"{major}.{minor + 1}.0" if release == "minor" else f"{major}.{minor}.{patch + 1}"
+              open(path, "w").write(source.replace(f'"{current}"', f'"{version}"', 1))
+
+          print(f"{current} -> {version}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\n")
+          EOF
+
+      - name: Build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git diff --stat
+          grep -q "const version = \"$VERSION\"" version.go || { echo "::error::version.go does not carry $VERSION."; exit 1; }
+          go build ./...
+          go vet ./...
+          make fmt
+
+      - name: Commit and tag
+        if: ${{ env.DRY_RUN != 'true' && env.RELEASE != 'retry' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "v$VERSION"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin main "v$VERSION"
+
+  release:
+    name: Publish
+    needs: build
+    # Dry runs from other branches stop after the build; on main they only report what would happen
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # creates the GitHub release
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+
+    steps:
+      - name: Dry run
+        if: ${{ env.DRY_RUN == 'true' }}
+        run: echo "Would tag v$VERSION, create its GitHub release and fetch $MODULE@v$VERSION through the Go module proxy. Nothing is published."
+
+      - name: Create GitHub release
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "Release v$VERSION already exists."
+          else
+            # --verify-tag: only ever attach to the tag the build job pushed, never create one here.
+            gh release create "v$VERSION" --verify-tag --generate-notes
+          fi
+
+      - name: Set up Go
+        if: ${{ env.DRY_RUN != 'true' }}
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      # Asking the proxy for the version makes it fetch the tag from GitHub, record it in the
+      # checksum database and hand it to pkg.go.dev, so `go get` works right away for everybody.
+      - name: Publish to the Go module proxy
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          GOPROXY: https://proxy.golang.org
+          GOFLAGS: -mod=mod
+        run: |
+          cd "$(mktemp -d)"
+          go mod init proxycheck > /dev/null 2>&1
+          go list -m -json "$MODULE@v$VERSION"
