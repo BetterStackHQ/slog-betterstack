@@ -345,3 +345,35 @@ func TestConverterAndMarshaler(t *testing.T) {
 		t.Error("Marshaler was not called")
 	}
 }
+
+func TestWithGroupEmptyNameIsANoOp(t *testing.T) {
+	handler := Option{Token: "x"}.NewBetterstackHandler()
+	if handler.WithGroup("") != handler {
+		t.Error(`WithGroup("") returned a new handler, want the same one`)
+	}
+}
+
+func TestSendErrors(t *testing.T) {
+	payload := []map[string]any{{"message": "m"}}
+
+	t.Run("marshaling", func(t *testing.T) {
+		failing := func(any) ([]byte, error) { return nil, errors.New("cannot marshal") }
+		if err := send("http://127.0.0.1:0/", "x", time.Second, failing, payload); err == nil || err.Error() != "cannot marshal" {
+			t.Errorf("err = %v, want the Marshaler's error", err)
+		}
+	})
+
+	t.Run("invalid endpoint", func(t *testing.T) {
+		if err := send("://not-a-url", "x", time.Second, json.Marshal, payload); err == nil {
+			t.Error("err = nil, want a request error for an invalid endpoint")
+		}
+	})
+
+	t.Run("unreachable endpoint", func(t *testing.T) {
+		server := httptest.NewServer(http.NotFoundHandler())
+		server.Close() // nothing listens on this URL any more
+		if err := send(server.URL, "x", time.Second, json.Marshal, payload); err == nil {
+			t.Error("err = nil, want a connection error for a closed endpoint")
+		}
+	})
+}
