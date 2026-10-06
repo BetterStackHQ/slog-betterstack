@@ -72,8 +72,8 @@ func TestRecordsAfterCloseAreReportedOnce(t *testing.T) {
 	}
 }
 
-// Found by sending a 12 MiB record to the real endpoint: it answered 2xx and the record never
-// appeared, because the per-record limit is enforced after the request is accepted.
+// Found by sending a 12 MiB record to the real endpoint: it answered 2xx and replaced the record
+// with a notice row in the source, so the client counted as sent what never landed.
 func TestRecordOverTheSizeLimitIsDroppedBeforeSending(t *testing.T) {
 	server, requests := newServer(t, accepted)
 	errs := &errorList{}
