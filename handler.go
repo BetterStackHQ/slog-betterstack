@@ -1,10 +1,10 @@
 package slogbetterstack
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"time"
 
 	"log/slog"
@@ -22,12 +22,12 @@ type Option struct {
 	Token string
 	// optional: endpoint
 	Endpoint string
-	// default: 10s
+	// optional: how long one upload attempt may take (default: 10s)
 	Timeout time.Duration
 
 	// optional: customize record builder
 	Converter Converter
-	// optional: custom marshaler
+	// optional: custom marshaler, called with the []map[string]any of a batch's records
 	Marshaler func(v any) ([]byte, error)
 	// optional: fetch attributes from context
 	AttrFromContext []func(ctx context.Context) []slog.Attr
@@ -35,9 +35,40 @@ type Option struct {
 	// optional: see slog.HandlerOptions
 	AddSource   bool
 	ReplaceAttr func(groups []string, a slog.Attr) slog.Attr
+
+	// Delivery. Records are queued and uploaded in batches by a background goroutine, so
+	// logging never waits for the network. Call Close before the program exits to deliver
+	// what is still queued.
+
+	// optional: records per upload (default: 1000)
+	BatchSize int
+	// optional: how long a partial batch waits before it is uploaded (default: 1s)
+	BatchInterval time.Duration
+	// optional: records the queue holds while uploads are behind; further records are
+	// dropped and counted rather than blocking the application (default: 100000)
+	MaxQueueSize int
+	// optional: concurrent uploads (default: 5)
+	MaxInFlight int
+	// optional: retries after a failed attempt, for 408, 429, 5xx and network errors;
+	// negative disables retries (default: 5)
+	MaxRetries int
+	// optional: base delay before a retry, doubled on every attempt with jitter; a
+	// Retry-After header is honoured instead (default: 300ms)
+	RetryBackoff time.Duration
+	// optional: how long Close waits for queued and in-flight records (default: 15s)
+	ShutdownTimeout time.Duration
+	// optional: send the JSON uncompressed instead of gzip-compressed
+	DisableCompression bool
+	// optional: receives every delivery failure and drop summary, from a background
+	// goroutine; it must not log through this handler (default: one line on stderr)
+	OnError func(err error)
+	// optional: the HTTP client to upload with; Timeout still applies to every request
+	HTTPClient *http.Client
 }
 
-func (o Option) NewBetterstackHandler() slog.Handler {
+// NewBetterstackHandler returns a handler that sends records to Better Stack. The handler is
+// also a [slog.Handler]; keep the returned value to call Close before the program exits.
+func (o Option) NewBetterstackHandler() *BetterstackHandler {
 	if o.Level == nil {
 		o.Level = slog.LevelDebug
 	}
@@ -51,7 +82,7 @@ func (o Option) NewBetterstackHandler() slog.Handler {
 	}
 
 	if o.Timeout == 0 {
-		o.Timeout = 10 * time.Second
+		o.Timeout = defaultTimeout
 	}
 
 	if o.Converter == nil {
@@ -66,43 +97,76 @@ func (o Option) NewBetterstackHandler() slog.Handler {
 		o.AttrFromContext = []func(ctx context.Context) []slog.Attr{}
 	}
 
+	if o.BatchSize <= 0 {
+		o.BatchSize = defaultBatchSize
+	}
+	if o.BatchInterval <= 0 {
+		o.BatchInterval = defaultBatchInterval
+	}
+	if o.MaxQueueSize <= 0 {
+		o.MaxQueueSize = defaultMaxQueueSize
+	}
+	if o.MaxInFlight <= 0 {
+		o.MaxInFlight = defaultMaxInFlight
+	}
+	switch {
+	case o.MaxRetries == 0:
+		o.MaxRetries = defaultMaxRetries
+	case o.MaxRetries < 0:
+		o.MaxRetries = 0
+	}
+	if o.RetryBackoff <= 0 {
+		o.RetryBackoff = defaultRetryBackoff
+	}
+	if o.ShutdownTimeout <= 0 {
+		o.ShutdownTimeout = defaultShutdownTimeout
+	}
+	if o.OnError == nil {
+		o.OnError = defaultOnError
+	}
+
 	return &BetterstackHandler{
-		option: o,
-		attrs:  []slog.Attr{},
-		groups: []string{},
+		option:    o,
+		attrs:     []slog.Attr{},
+		groups:    []string{},
+		transport: newTransport(o),
 	}
 }
 
 var _ slog.Handler = (*BetterstackHandler)(nil)
 
+// BetterstackHandler is a [slog.Handler] that sends records to Better Stack. Handlers derived
+// with WithAttrs and WithGroup share the queue and the uploads of the handler they came from,
+// and Close on any of them closes all of them.
 type BetterstackHandler struct {
-	option Option
-	attrs  []slog.Attr
-	groups []string
+	option    Option
+	attrs     []slog.Attr
+	groups    []string
+	transport *transport
 }
 
 func (h *BetterstackHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.option.Level.Level()
 }
 
+// Handle converts the record and queues it for upload. It never waits for the network: when
+// the queue is full the record is dropped and counted. After Close it returns ErrClosed.
 func (h *BetterstackHandler) Handle(ctx context.Context, record slog.Record) error {
 	fromContext := slogcommon.ContextExtractor(ctx, h.option.AttrFromContext)
-	payload := h.option.Converter(h.option.AddSource, h.option.ReplaceAttr, append(h.attrs, fromContext...), h.groups, &record)
+	// Every goroutine logging through this handler shares h.attrs, so appending must never
+	// write into its spare capacity.
+	attrs := append(slices.Clip(h.attrs), fromContext...)
+	payload := h.option.Converter(h.option.AddSource, h.option.ReplaceAttr, attrs, h.groups, &record)
 
-	// non-blocking
-	go func() {
-		// @TODO: batching ?
-		_ = send(h.option.Endpoint, h.option.Token, h.option.Timeout, h.option.Marshaler, []map[string]any{payload})
-	}()
-
-	return nil
+	return h.transport.enqueue(payload)
 }
 
 func (h *BetterstackHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &BetterstackHandler{
-		option: h.option,
-		attrs:  slogcommon.AppendAttrsToGroup(h.groups, h.attrs, attrs...),
-		groups: h.groups,
+		option:    h.option,
+		attrs:     slogcommon.AppendAttrsToGroup(h.groups, h.attrs, attrs...),
+		groups:    h.groups,
+		transport: h.transport,
 	}
 }
 
@@ -113,43 +177,29 @@ func (h *BetterstackHandler) WithGroup(name string) slog.Handler {
 	}
 
 	return &BetterstackHandler{
-		option: h.option,
-		attrs:  h.attrs,
-		groups: append(h.groups, name),
+		option:    h.option,
+		attrs:     h.attrs,
+		groups:    append(h.groups, name),
+		transport: h.transport,
 	}
 }
 
-func send(endpoint string, token string, timeout time.Duration, marshaler func(v any) ([]byte, error), payload []map[string]any) error {
-	client := http.Client{
-		Timeout: time.Duration(10) * time.Second,
-	}
+// Flush uploads every record queued so far and returns once Better Stack has acknowledged
+// them, a delivery failed for good, or ctx is done. Failures are reported through OnError.
+func (h *BetterstackHandler) Flush(ctx context.Context) error {
+	return h.transport.flush(ctx)
+}
 
-	json, err := marshaler(payload)
-	if err != nil {
-		return err
-	}
+// Close delivers what is still queued, waits for the uploads in flight up to ShutdownTimeout
+// and stops the background goroutine. It must run before the program exits: records are
+// batched, so without it the last ones are lost. Note that os.Exit and log.Fatal skip deferred
+// calls. Close is safe to call more than once; later calls return the first result.
+func (h *BetterstackHandler) Close() error {
+	return h.transport.close()
+}
 
-	body := bytes.NewBuffer(json)
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// @TODO: maintain a pool of tcp connections
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, body)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Add("authorization", `Bearer `+token)
-	req.Header.Add("content-type", `application/json`)
-	req.Header.Add("user-agent", name)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-
-	defer resp.Body.Close() //nolint:errcheck
-
-	return nil
+// Stats reports what happened to the records handed to this handler and the ones derived
+// from it.
+func (h *BetterstackHandler) Stats() Stats {
+	return h.transport.stats.snapshot()
 }

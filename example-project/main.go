@@ -27,7 +27,8 @@ func main() {
 		option.Endpoint = "https://" + host + "/"
 	}
 
-	logger := slog.New(option.NewBetterstackHandler())
+	handler := option.NewBetterstackHandler()
+	logger := slog.New(handler)
 	logger = logger.With("release", "v1.0.0")
 
 	logger.Debug("Debugging user service.", "service", "UserService")
@@ -44,8 +45,12 @@ func main() {
 		With("error", fmt.Errorf("an error")).
 		Error("a message", slog.Int("count", 1))
 
-	// Logs are sent asynchronously: give the handler a moment before the process exits.
-	time.Sleep(5 * time.Second)
+	// Records are sent in batches: Close delivers what is still queued before the program exits.
+	if err := handler.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, "close:", err)
+		os.Exit(1)
+	}
 
-	fmt.Println("Sent 3 log records. Open Better Stack → Live tail to see them.")
+	stats := handler.Stats()
+	fmt.Printf("Sent %d log records. Open Better Stack → Live tail to see them.\n", stats.Sent)
 }
