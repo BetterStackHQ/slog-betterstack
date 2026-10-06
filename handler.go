@@ -19,7 +19,7 @@ type Option struct {
 	Level slog.Leveler
 
 	// token
-	Token   string
+	Token string
 	// optional: endpoint
 	Endpoint string
 	// default: 10s

@@ -1,4 +1,4 @@
-module github.com/samber/slog-betterstack
+module github.com/BetterStackHQ/slog-betterstack
 
 go 1.21
 
