@@ -9,15 +9,20 @@
 # because main is unprotected or because the app is among the actors allowed to bypass the pull
 # request requirement, since the version commit and the tag are pushed by the workflow.
 #
-# Release: Actions → Release → Run workflow from main, pick patch or minor. The workflow runs the
-# tests, bumps the version in version.go, builds, commits "vX.Y.Z", tags it, pushes both, creates a
-# GitHub release with auto-generated notes for the tag and fetches the version through the Go
-# module proxy; edit the notes afterwards if needed.
+# Release: Actions → Release → Run workflow from main, pick patch, minor or major. The workflow
+# runs the tests, bumps the version in version.go, builds, commits "vX.Y.Z", tags it, pushes both,
+# creates a GitHub release with auto-generated notes for the tag and fetches the version through
+# the Go module proxy; edit the notes afterwards if needed.
+#
+# Major: Go's semantic import versioning puts the major version into the module path from v2 on,
+# so a major release also moves the module to "<path>/vN" in go.mod, in every import of this
+# repository and in the README's pkg.go.dev links, all in the same version commit. Users upgrade
+# by changing their import path; the previous major keeps working at the old path.
 #
 # Retry: if a release failed after the version commit was pushed, run "retry" from main. It bumps
 # nothing, checks out the tag of the version in version.go and finishes the release from there: the
-# GitHub release is created if it is still missing and the proxy is asked again. Running patch or
-# minor again would release the next version instead.
+# GitHub release is created if it is still missing and the proxy is asked again. Running patch,
+# minor or major again would release the next version instead.
 #
 # Dry run: bumps in place without committing and builds; nothing is pushed or published. Every push
 # that touches this file is a dry run, so a change to the workflow proves itself on its pull request
@@ -28,9 +33,9 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "patch or minor: bump, tag and publish. retry: finish a release that failed halfway."
+        description: "patch, minor or major: bump, tag and publish. retry: finish a release that failed halfway."
         type: choice
-        options: [patch, minor, retry]
+        options: [patch, minor, major, retry]
         required: true
       dry_run:
         description: "Dry run: bump and build, publish nothing"
@@ -50,7 +55,6 @@ concurrency:
 env:
   DRY_RUN: ${{ github.event_name == 'push' || inputs.dry_run }}
   RELEASE: ${{ inputs.release || 'patch' }}
-  MODULE: github.com/BetterStackHQ/slog-betterstack
 
 jobs:
   verify:
@@ -77,6 +81,7 @@ jobs:
       contents: write # pushes the version commit and the tag
     outputs:
       version: ${{ steps.version.outputs.version }}
+      module: ${{ steps.version.outputs.module }}
 
     steps:
       - name: Releases run from main only
@@ -121,20 +126,53 @@ jobs:
               if tagged and not dry_run:
                   sys.exit(f"HEAD is already released as v{current}, there is nothing new to release")
               major, minor, patch = map(int, current.split("."))
-              version = f"{major}.{minor + 1}.0" if release == "minor" else f"{major}.{minor}.{patch + 1}"
+              if release == "major":
+                  version = f"{major + 1}.0.0"
+              elif release == "minor":
+                  version = f"{major}.{minor + 1}.0"
+              else:
+                  version = f"{major}.{minor}.{patch + 1}"
               open(path, "w").write(source.replace(f'"{current}"', f'"{version}"', 1))
+
+          # Semantic import versioning: from v2 on, the module path ends in /vN. The path lives in
+          # go.mod, in the imports of this repository (the example project) and in the README's
+          # pkg.go.dev links; GitHub URLs of the repository are not import paths and stay as they are.
+          gomod = open("go.mod").read()
+          module = re.search(r"^module (\S+)$", gomod, re.M).group(1)
+          base = re.sub(r"/v\d+$", "", module)
+          major = int(version.split(".")[0])
+          wanted = base if major < 2 else f"{base}/v{major}"
+          if release != "retry" and wanted != module:
+              suffixed = re.escape(base) + r"(?:/v\d+)?"
+              open("go.mod", "w").write(gomod.replace(f"module {module}", f"module {wanted}", 1))
+              for root, dirs, files in os.walk("."):
+                  dirs[:] = [d for d in dirs if d != ".git"]
+                  for name in files:
+                      if not name.endswith(".go"):
+                          continue
+                      file = os.path.join(root, name)
+                      text = open(file).read()
+                      rewritten = re.sub(r'"' + suffixed + r'"', f'"{wanted}"', text)
+                      if rewritten != text:
+                          open(file, "w").write(rewritten)
+              readme = open("README.md").read()
+              open("README.md", "w").write(re.sub(r"pkg\.go\.dev/(badge/)?" + suffixed, lambda m: f"pkg.go.dev/{m.group(1) or ''}{wanted}", readme))
+              print(f"module path {module} -> {wanted}")
 
           print(f"{current} -> {version}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"version={version}\n")
+              output.write(f"module={wanted}\n")
           EOF
 
       - name: Build
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          MODULE: ${{ steps.version.outputs.module }}
         run: |
           git diff --stat
           grep -q "const version = \"$VERSION\"" version.go || { echo "::error::version.go does not carry $VERSION."; exit 1; }
+          grep -q "^module $MODULE$" go.mod || { echo "::error::go.mod does not declare module $MODULE."; exit 1; }
           go build ./...
           go vet ./...
           make fmt
@@ -160,6 +198,7 @@ jobs:
       contents: write # creates the GitHub release
     env:
       VERSION: ${{ needs.build.outputs.version }}
+      MODULE: ${{ needs.build.outputs.module }}
 
     steps:
       - name: Dry run
