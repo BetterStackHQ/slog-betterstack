@@ -18,7 +18,8 @@ type Option struct {
 	// log level (default: debug)
 	Level slog.Leveler
 
-	// token
+	// source token; without it the handler reports the omission through OnError once and
+	// drops every record instead of sending anything
 	Token string
 	// optional: endpoint
 	Endpoint string
@@ -71,10 +72,6 @@ type Option struct {
 func (o Option) NewBetterstackHandler() *BetterstackHandler {
 	if o.Level == nil {
 		o.Level = slog.LevelDebug
-	}
-
-	if o.Token == "" {
-		panic("missing Betterstack token")
 	}
 
 	if o.Endpoint == "" {

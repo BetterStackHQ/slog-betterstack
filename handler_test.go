@@ -323,13 +323,29 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
-func TestMissingTokenPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Error("NewBetterstackHandler without a token did not panic")
-		}
-	}()
-	Option{}.NewBetterstackHandler()
+func TestMissingTokenIsReportedOnceAndDropsRecords(t *testing.T) {
+	server, requests := newServer(t, accepted)
+	errs := &errorList{}
+	handler := Option{Endpoint: server.URL, OnError: errs.add}.NewBetterstackHandler()
+	t.Cleanup(func() { _ = handler.Close() })
+	logger := slog.New(handler)
+
+	logger.Info("first")
+	logger.Info("second")
+	if err := handler.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "third", 0)); !errors.Is(err, ErrMissingToken) {
+		t.Errorf("Handle = %v, want ErrMissingToken", err)
+	}
+	if err := handler.Close(); err != nil {
+		t.Errorf("Close = %v, want nil", err)
+	}
+
+	nothingWithin(t, requests, 50*time.Millisecond)
+	if got := errs.all(); len(got) != 1 || !errors.Is(got[0], ErrMissingToken) {
+		t.Errorf("OnError got %v, want ErrMissingToken exactly once", got)
+	}
+	if stats := handler.Stats(); stats.DroppedRejected != 3 || stats.Sent != 0 {
+		t.Errorf("stats = %+v, want DroppedRejected 3 and Sent 0", stats)
+	}
 }
 
 func TestLevel(t *testing.T) {

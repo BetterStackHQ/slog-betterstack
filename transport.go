@@ -19,6 +19,10 @@ import (
 // ErrClosed is returned by Handle and Flush once the handler has been closed.
 var ErrClosed = errors.New("slog-betterstack: the handler is closed")
 
+// ErrMissingToken is returned by Handle, and reported through OnError once, when the handler
+// was built without a source token. Nothing is sent and every record is counted as dropped.
+var ErrMissingToken = errors.New("slog-betterstack: no source token configured, records are dropped")
+
 const (
 	defaultBatchSize       = 1000
 	defaultBatchInterval   = time.Second
@@ -92,6 +96,7 @@ type transport struct {
 	closeOnce sync.Once
 	closeErr  error
 	inFlight  sync.WaitGroup
+	tokenOnce sync.Once // reports the missing token a single time
 
 	stats             counters
 	reportedQueueFull uint64 // queue-full drops already summarised through OnError
@@ -126,6 +131,12 @@ func newTransport(option Option) *transport {
 // record is dropped and counted. The sender starts with the first record.
 func (t *transport) enqueue(record map[string]any) error {
 	t.stats.enqueued.Add(1)
+
+	if t.option.Token == "" {
+		t.stats.droppedRejected.Add(1)
+		t.tokenOnce.Do(func() { t.report(ErrMissingToken) })
+		return ErrMissingToken
+	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()

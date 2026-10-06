@@ -4,6 +4,7 @@
 //	handler := slogbetterstack.Option{
 //		Token:    "$SOURCE_TOKEN",
 //		Endpoint: "https://$INGESTING_HOST/",
+//		Level:    slog.LevelInfo, // Debug if omitted
 //	}.NewBetterstackHandler()
 //	defer handler.Close()
 //
@@ -12,8 +13,8 @@
 //
 // Records are queued and uploaded in batches by a background goroutine, so logging never
 // waits for the network. Close delivers what is still queued and must run before the program
-// exits; os.Exit and log.Fatal skip deferred calls. Delivery failures are reported through
-// [Option.OnError], on stderr by default, and counted in [Stats].
+// exits; os.Exit and log.Fatal skip deferred calls. Delivery failures, and a missing token,
+// are reported through [Option.OnError], on stderr by default, and counted in [Stats].
 //
 // See https://betterstack.com/docs/logs/go/ for the full documentation.
 package slogbetterstack

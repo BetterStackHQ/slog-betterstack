@@ -22,7 +22,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	option := slogbetterstack.Option{Level: slog.LevelDebug, Token: token}
+	option := slogbetterstack.Option{
+		Token: token,
+		Level: slog.LevelInfo, // Debug if omitted
+	}
 	if host := os.Getenv("BETTERSTACK_INGESTING_HOST"); host != "" {
 		option.Endpoint = "https://" + host + "/"
 	}
@@ -31,7 +34,7 @@ func main() {
 	logger := slog.New(handler)
 	logger = logger.With("release", "v1.0.0")
 
-	logger.Debug("Debugging user service.", "service", "UserService")
+	logger.Info("Starting user service.", "service", "UserService")
 
 	logger.With("userID", 123).Error("Unable to fetch user data.")
 
