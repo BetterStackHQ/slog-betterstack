@@ -223,6 +223,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: stable
+          cache: false # nothing is checked out here, so there is no go.mod to key a cache on
 
       # Asking the proxy for the version makes it fetch the tag from GitHub, record it in the
       # checksum database and hand it to pkg.go.dev, so `go get` works right away for everybody.
