@@ -97,6 +97,7 @@ type transport struct {
 	closeErr  error
 	inFlight  sync.WaitGroup
 	tokenOnce sync.Once // reports the missing token a single time
+	lateOnce  sync.Once // reports records logged after Close a single time
 
 	stats             counters
 	reportedQueueFull uint64 // queue-full drops already summarised through OnError
@@ -142,6 +143,7 @@ func (t *transport) enqueue(record map[string]any) error {
 	defer t.mu.Unlock()
 	if t.closed {
 		t.stats.droppedClosed.Add(1)
+		t.lateOnce.Do(func() { t.report(fmt.Errorf("slog-betterstack: records logged after Close are dropped")) })
 		return ErrClosed
 	}
 	if !t.started {
@@ -282,9 +284,19 @@ func (t *transport) upload(records []map[string]any) {
 		}
 	}
 
+	// abandon drops the batch because the handler is shutting down. After a failed attempt the
+	// failure is reported, so that an outage is not hidden behind the shutdown timeout.
+	abandon := func(attempts int, lastErr error) {
+		var err error
+		if lastErr != nil {
+			err = fmt.Errorf("slog-betterstack: dropped %s at shutdown after %s: %w", plural(len(records), "record"), plural(attempts, "attempt"), lastErr)
+		}
+		t.drop(&t.stats.droppedClosed, len(records), err)
+	}
+
 	for attempt := 0; ; attempt++ {
 		if t.ctx.Err() != nil {
-			t.drop(&t.stats.droppedClosed, len(records), nil)
+			abandon(attempt, nil)
 			return
 		}
 
@@ -313,7 +325,7 @@ func (t *transport) upload(records []map[string]any) {
 		}
 
 		if t.ctx.Err() != nil {
-			t.drop(&t.stats.droppedClosed, len(records), nil)
+			abandon(attempt+1, err)
 			return
 		}
 		if attempt >= t.option.MaxRetries {
@@ -322,7 +334,7 @@ func (t *transport) upload(records []map[string]any) {
 		}
 		t.stats.retries.Add(1)
 		if !t.wait(backoff(t.option.RetryBackoff, attempt, retryAfter)) {
-			t.drop(&t.stats.droppedClosed, len(records), nil)
+			abandon(attempt+1, err)
 			return
 		}
 	}

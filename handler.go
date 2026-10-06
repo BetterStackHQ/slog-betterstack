@@ -60,8 +60,9 @@ type Option struct {
 	ShutdownTimeout time.Duration
 	// optional: send the JSON uncompressed instead of gzip-compressed
 	DisableCompression bool
-	// optional: receives every delivery failure and drop summary, from a background
-	// goroutine; it must not log through this handler (default: one line on stderr)
+	// optional: receives every delivery failure and drop summary. It is called from
+	// background goroutines, possibly several at once, must return promptly and must not
+	// log through this handler (default: one line on stderr)
 	OnError func(err error)
 	// optional: the HTTP client to upload with; Timeout still applies to every request
 	HTTPClient *http.Client
@@ -69,6 +70,8 @@ type Option struct {
 
 // NewBetterstackHandler returns a handler that sends records to Better Stack. The handler is
 // also a [slog.Handler]; keep the returned value to call Close before the program exits.
+// Create one handler per process rather than one per request: each handler owns a goroutine
+// and a connection pool from its first record until Close.
 func (o Option) NewBetterstackHandler() *BetterstackHandler {
 	if o.Level == nil {
 		o.Level = slog.LevelDebug
@@ -78,7 +81,7 @@ func (o Option) NewBetterstackHandler() *BetterstackHandler {
 		o.Endpoint = BetterstackEndpoint
 	}
 
-	if o.Timeout == 0 {
+	if o.Timeout <= 0 {
 		o.Timeout = defaultTimeout
 	}
 
