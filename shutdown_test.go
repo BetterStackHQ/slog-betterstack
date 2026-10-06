@@ -81,7 +81,7 @@ func TestRecordOverTheSizeLimitIsDroppedBeforeSending(t *testing.T) {
 	logger := slog.New(handler)
 
 	logger.Info("small before")
-	logger.Info("huge", "blob", strings.Repeat("x", maxRecordBytes))
+	logger.Info("huge", "blob", strings.Repeat("x", 10<<20)) // over 10 MiB once encoded
 	logger.Info("small after")
 	if err := handler.Close(); err != nil {
 		t.Fatal(err)
