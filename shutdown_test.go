@@ -72,6 +72,36 @@ func TestRecordsAfterCloseAreReportedOnce(t *testing.T) {
 	}
 }
 
+// Found by sending a 12 MiB record to the real endpoint: it answered 2xx and the record never
+// appeared, because the per-record limit is enforced after the request is accepted.
+func TestRecordOverTheSizeLimitIsDroppedBeforeSending(t *testing.T) {
+	server, requests := newServer(t, accepted)
+	errs := &errorList{}
+	handler := newHandler(t, server, Option{BatchInterval: time.Hour, OnError: errs.add})
+	logger := slog.New(handler)
+
+	logger.Info("small before")
+	logger.Info("huge", "blob", strings.Repeat("x", maxRecordBytes))
+	logger.Info("small after")
+	if err := handler.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var delivered []string
+	for len(delivered) < 2 {
+		delivered = append(delivered, messages(receive(t, requests).records)...)
+	}
+	if want := []string{"small before", "small after"}; strings.Join(delivered, ",") != strings.Join(want, ",") {
+		t.Errorf("delivered %v, want %v", delivered, want)
+	}
+	if got := errs.joined(); !strings.Contains(got, "larger than") {
+		t.Errorf("OnError got %q, want a report about the oversized record", got)
+	}
+	if stats := handler.Stats(); stats.Sent != 2 || stats.DroppedOversize != 1 {
+		t.Errorf("stats = %+v, want Sent 2 and DroppedOversize 1", stats)
+	}
+}
+
 func TestNegativeTimeoutMeansTheDefault(t *testing.T) {
 	handler := Option{Token: "x", Timeout: -1}.NewBetterstackHandler()
 	if handler.option.Timeout != 10*time.Second {
