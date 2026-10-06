@@ -16,9 +16,9 @@ Experience SQL-compatible structured log management based on ClickHouse. [Learn 
 Please let us know at [hello@betterstack.com](mailto:hello@betterstack.com). We're happy to help!
 
 ## Credits
-`slog-betterstack` was created and maintained by [Samuel Berthe](https://github.com/samber) and released under the MIT license.
+`slog-betterstack` was created and maintained by [Samuel Berthe](https://github.com/samber) and released under the MIT license. [Tomáš Procházka](https://github.com/prochac) reported that records logged before exit were lost, and his analysis of the official clients shaped the delivery defaults and the drop accounting.
 
-Thank you, Samuel! ❤️
+Thank you, Samuel and Tomáš! ❤️
 
 ---
 

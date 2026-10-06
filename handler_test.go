@@ -1,6 +1,7 @@
 package slogbetterstack
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,43 +12,64 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // These tests pin the behaviour applications rely on: the shape of the records that reach
-// Better Stack, the request headers, and what every option does. The transport may change
-// underneath them, so they only ever look at what arrives at the server, never at how.
+// Better Stack, the request headers, and what every option does. They only ever look at what
+// arrives at the server, never at how it got there.
 
 type request struct {
 	header  http.Header
 	records []map[string]any
 }
 
-// newServer stands in for Better Stack. It reports every request it receives with the records
-// decoded from its JSON array body.
-func newServer(t *testing.T) (*httptest.Server, <-chan request) {
+// responder writes the status Better Stack would answer with. The records are the decoded body.
+type responder func(w http.ResponseWriter, r *http.Request, records []map[string]any)
+
+func accepted(w http.ResponseWriter, _ *http.Request, _ []map[string]any) {
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func status(code int) responder {
+	return func(w http.ResponseWriter, _ *http.Request, _ []map[string]any) { w.WriteHeader(code) }
+}
+
+// newServer stands in for Better Stack: it decodes every request's JSON array body, gzip-compressed
+// or not, lets respond answer it and reports the request once it is answered.
+func newServer(t *testing.T, respond responder) (*httptest.Server, <-chan request) {
 	t.Helper()
-	requests := make(chan request, 16)
+	requests := make(chan request, 1024)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
+		var body io.Reader = r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			unzipped, err := gzip.NewReader(r.Body)
+			if err != nil {
+				t.Errorf("Content-Encoding is gzip but the body is not: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			defer func() { _ = unzipped.Close() }()
+			body = unzipped
+		}
+		raw, err := io.ReadAll(body)
 		if err != nil {
 			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		var records []map[string]any
-		if err := json.Unmarshal(body, &records); err != nil {
-			t.Errorf("body is not a JSON array of records: %v\n%s", err, body)
+		if err := json.Unmarshal(raw, &records); err != nil {
+			t.Errorf("body is not a JSON array of records: %v\n%s", err, raw)
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		respond(w, r, records)
 		requests <- request{header: r.Header.Clone(), records: records}
 	}))
-	t.Cleanup(func() {
-		server.Close()
-		// The handler sends through http.DefaultTransport; drop its idle connections so their
-		// goroutines are gone before goleak looks.
-		http.DefaultTransport.(*http.Transport).CloseIdleConnections()
-	})
+	t.Cleanup(server.Close)
 	return server, requests
 }
 
@@ -62,6 +84,25 @@ func receive(t *testing.T, requests <-chan request) request {
 	}
 }
 
+// receiveN waits for n requests.
+func receiveN(t *testing.T, requests <-chan request, n int) []request {
+	t.Helper()
+	var got []request
+	for len(got) < n {
+		got = append(got, receive(t, requests))
+	}
+	return got
+}
+
+func nothingWithin(t *testing.T, requests <-chan request, d time.Duration) {
+	t.Helper()
+	select {
+	case r := <-requests:
+		t.Fatalf("a request with %d records reached the server, want none", len(r.records))
+	case <-time.After(d):
+	}
+}
+
 func oneRecord(t *testing.T, requests <-chan request) map[string]any {
 	t.Helper()
 	r := receive(t, requests)
@@ -69,6 +110,14 @@ func oneRecord(t *testing.T, requests <-chan request) map[string]any {
 		t.Fatalf("got %d records in one request, want 1: %v", len(r.records), r.records)
 	}
 	return r.records[0]
+}
+
+func messages(records []map[string]any) []string {
+	var out []string
+	for _, r := range records {
+		out = append(out, r["message"].(string))
+	}
+	return out
 }
 
 func extraOf(t *testing.T, record map[string]any) map[string]any {
@@ -80,15 +129,57 @@ func extraOf(t *testing.T, record map[string]any) map[string]any {
 	return extra
 }
 
-func newLogger(server *httptest.Server, option Option) *slog.Logger {
+// errorList collects what the handler reports through OnError.
+type errorList struct {
+	mu   sync.Mutex
+	errs []error
+}
+
+func (l *errorList) add(err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.errs = append(l.errs, err)
+}
+
+func (l *errorList) all() []error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]error(nil), l.errs...)
+}
+
+func (l *errorList) joined() string {
+	var parts []string
+	for _, err := range l.all() {
+		parts = append(parts, err.Error())
+	}
+	return strings.Join(parts, "\n")
+}
+
+// newHandler builds a handler that sends to server and is closed when the test ends. Batches wait
+// 10ms instead of a second and retries back off for a millisecond, unless the test says otherwise.
+func newHandler(t *testing.T, server *httptest.Server, option Option) *BetterstackHandler {
+	t.Helper()
 	option.Token = "test-token"
 	option.Endpoint = server.URL
-	return slog.New(option.NewBetterstackHandler())
+	if option.BatchInterval == 0 {
+		option.BatchInterval = 10 * time.Millisecond
+	}
+	if option.RetryBackoff == 0 {
+		option.RetryBackoff = time.Millisecond
+	}
+	handler := option.NewBetterstackHandler()
+	t.Cleanup(func() { _ = handler.Close() })
+	return handler
+}
+
+func newLogger(t *testing.T, server *httptest.Server, option Option) *slog.Logger {
+	t.Helper()
+	return slog.New(newHandler(t, server, option))
 }
 
 func TestRecordShape(t *testing.T) {
-	server, requests := newServer(t)
-	logger := newLogger(server, Option{}).With("release", "v1.0.0")
+	server, requests := newServer(t, accepted)
+	logger := newLogger(t, server, Option{}).With("release", "v1.0.0")
 
 	before := time.Now()
 	logger.
@@ -157,16 +248,17 @@ func TestRecordShape(t *testing.T) {
 }
 
 func TestRequestHeaders(t *testing.T) {
-	server, requests := newServer(t)
-	logger := newLogger(server, Option{})
+	server, requests := newServer(t, accepted)
+	logger := newLogger(t, server, Option{})
 
 	logger.Info("hello")
 
 	got := receive(t, requests)
 	for header, want := range map[string]string{
-		"Authorization": "Bearer test-token",
-		"Content-Type":  "application/json",
-		"User-Agent":    "BetterStackHQ/slog-betterstack",
+		"Authorization":    "Bearer test-token",
+		"Content-Type":     "application/json",
+		"Content-Encoding": "gzip",
+		"User-Agent":       "BetterStackHQ/slog-betterstack/" + version,
 	} {
 		if value := got.header.Get(header); value != want {
 			t.Errorf("%s = %q, want %q", header, value, want)
@@ -180,29 +272,80 @@ func TestRequestHeaders(t *testing.T) {
 	}
 }
 
-func TestDefaults(t *testing.T) {
-	handler, ok := Option{Token: "x"}.NewBetterstackHandler().(*BetterstackHandler)
-	if !ok {
-		t.Fatal("NewBetterstackHandler does not return a *BetterstackHandler")
+func TestDisableCompression(t *testing.T) {
+	server, requests := newServer(t, accepted)
+	logger := newLogger(t, server, Option{DisableCompression: true})
+
+	logger.Info("plain")
+
+	got := receive(t, requests)
+	if encoding := got.header.Get("Content-Encoding"); encoding != "" {
+		t.Errorf("Content-Encoding = %q, want none with DisableCompression", encoding)
 	}
-	if handler.option.Endpoint != "https://in.logs.betterstack.com/" {
-		t.Errorf("Endpoint = %q, want the Better Stack ingesting endpoint", handler.option.Endpoint)
-	}
-	if handler.option.Timeout != 10*time.Second {
-		t.Errorf("Timeout = %s, want 10s", handler.option.Timeout)
-	}
-	if handler.option.Level.Level() != slog.LevelDebug {
-		t.Errorf("Level = %s, want DEBUG", handler.option.Level.Level())
+	if want := []string{"plain"}; !reflect.DeepEqual(messages(got.records), want) {
+		t.Errorf("messages = %v, want %v", messages(got.records), want)
 	}
 }
 
-func TestMissingTokenPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Error("NewBetterstackHandler without a token did not panic")
+func TestDefaults(t *testing.T) {
+	handler := Option{Token: "x"}.NewBetterstackHandler()
+	option := handler.option
+	for name, got := range map[string]any{
+		"Endpoint":        option.Endpoint,
+		"Timeout":         option.Timeout,
+		"Level":           option.Level.Level(),
+		"BatchSize":       option.BatchSize,
+		"BatchInterval":   option.BatchInterval,
+		"MaxQueueSize":    option.MaxQueueSize,
+		"MaxRetries":      option.MaxRetries,
+		"RetryBackoff":    option.RetryBackoff,
+		"MaxInFlight":     option.MaxInFlight,
+		"ShutdownTimeout": option.ShutdownTimeout,
+	} {
+		want := map[string]any{
+			"Endpoint":        "https://in.logs.betterstack.com/",
+			"Timeout":         10 * time.Second,
+			"Level":           slog.LevelDebug,
+			"BatchSize":       1000,
+			"BatchInterval":   time.Second,
+			"MaxQueueSize":    100_000,
+			"MaxRetries":      5,
+			"RetryBackoff":    300 * time.Millisecond,
+			"MaxInFlight":     5,
+			"ShutdownTimeout": 15 * time.Second,
+		}[name]
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %v, want %v", name, got, want)
 		}
-	}()
-	Option{}.NewBetterstackHandler()
+	}
+	if option.OnError == nil {
+		t.Error("OnError = nil, want the default reporter")
+	}
+}
+
+func TestMissingTokenIsReportedOnceAndDropsRecords(t *testing.T) {
+	server, requests := newServer(t, accepted)
+	errs := &errorList{}
+	handler := Option{Endpoint: server.URL, OnError: errs.add}.NewBetterstackHandler()
+	t.Cleanup(func() { _ = handler.Close() })
+	logger := slog.New(handler)
+
+	logger.Info("first")
+	logger.Info("second")
+	if err := handler.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "third", 0)); !errors.Is(err, ErrMissingToken) {
+		t.Errorf("Handle = %v, want ErrMissingToken", err)
+	}
+	if err := handler.Close(); err != nil {
+		t.Errorf("Close = %v, want nil", err)
+	}
+
+	nothingWithin(t, requests, 50*time.Millisecond)
+	if got := errs.all(); len(got) != 1 || !errors.Is(got[0], ErrMissingToken) {
+		t.Errorf("OnError got %v, want ErrMissingToken exactly once", got)
+	}
+	if stats := handler.Stats(); stats.DroppedRejected != 3 || stats.Sent != 0 {
+		t.Errorf("stats = %+v, want DroppedRejected 3 and Sent 0", stats)
+	}
 }
 
 func TestLevel(t *testing.T) {
@@ -222,8 +365,8 @@ func TestLevel(t *testing.T) {
 }
 
 func TestWithGroupNestsAttributes(t *testing.T) {
-	server, requests := newServer(t)
-	logger := newLogger(server, Option{}).WithGroup("request")
+	server, requests := newServer(t, accepted)
+	logger := newLogger(t, server, Option{}).WithGroup("request")
 
 	logger.Info("handled", "id", "r-1", slog.Group("response", "status", 200))
 
@@ -238,9 +381,16 @@ func TestWithGroupNestsAttributes(t *testing.T) {
 	}
 }
 
+func TestWithGroupEmptyNameIsANoOp(t *testing.T) {
+	handler := Option{Token: "x"}.NewBetterstackHandler()
+	if handler.WithGroup("") != handler {
+		t.Error(`WithGroup("") returned a new handler, want the same one`)
+	}
+}
+
 func TestAddSource(t *testing.T) {
-	server, requests := newServer(t)
-	logger := newLogger(server, Option{AddSource: true})
+	server, requests := newServer(t, accepted)
+	logger := newLogger(t, server, Option{AddSource: true})
 
 	logger.Info("where am I")
 
@@ -260,8 +410,8 @@ func TestAddSource(t *testing.T) {
 }
 
 func TestReplaceAttr(t *testing.T) {
-	server, requests := newServer(t)
-	logger := newLogger(server, Option{
+	server, requests := newServer(t, accepted)
+	logger := newLogger(t, server, Option{
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == "password" {
 				return slog.String("password", "[redacted]")
@@ -280,8 +430,8 @@ func TestReplaceAttr(t *testing.T) {
 
 func TestAttrFromContext(t *testing.T) {
 	type key struct{}
-	server, requests := newServer(t)
-	logger := newLogger(server, Option{
+	server, requests := newServer(t, accepted)
+	logger := newLogger(t, server, Option{
 		AttrFromContext: []func(ctx context.Context) []slog.Attr{
 			func(ctx context.Context) []slog.Attr {
 				return []slog.Attr{slog.String("request_id", ctx.Value(key{}).(string))}
@@ -302,8 +452,8 @@ func TestContextKey(t *testing.T) {
 	ContextKey = "context"
 	t.Cleanup(func() { ContextKey = previous })
 
-	server, requests := newServer(t)
-	logger := newLogger(server, Option{})
+	server, requests := newServer(t, accepted)
+	logger := newLogger(t, server, Option{})
 
 	logger.Info("hello", "a", 1)
 
@@ -318,9 +468,9 @@ func TestContextKey(t *testing.T) {
 }
 
 func TestConverterAndMarshaler(t *testing.T) {
-	server, requests := newServer(t)
+	server, requests := newServer(t, accepted)
 	marshaled := make(chan any, 1)
-	logger := newLogger(server, Option{
+	logger := newLogger(t, server, Option{
 		Converter: func(addSource bool, replaceAttr func(groups []string, a slog.Attr) slog.Attr, loggerAttr []slog.Attr, groups []string, record *slog.Record) map[string]any {
 			return map[string]any{"custom": record.Message}
 		},
@@ -344,36 +494,4 @@ func TestConverterAndMarshaler(t *testing.T) {
 	default:
 		t.Error("Marshaler was not called")
 	}
-}
-
-func TestWithGroupEmptyNameIsANoOp(t *testing.T) {
-	handler := Option{Token: "x"}.NewBetterstackHandler()
-	if handler.WithGroup("") != handler {
-		t.Error(`WithGroup("") returned a new handler, want the same one`)
-	}
-}
-
-func TestSendErrors(t *testing.T) {
-	payload := []map[string]any{{"message": "m"}}
-
-	t.Run("marshaling", func(t *testing.T) {
-		failing := func(any) ([]byte, error) { return nil, errors.New("cannot marshal") }
-		if err := send("http://127.0.0.1:0/", "x", time.Second, failing, payload); err == nil || err.Error() != "cannot marshal" {
-			t.Errorf("err = %v, want the Marshaler's error", err)
-		}
-	})
-
-	t.Run("invalid endpoint", func(t *testing.T) {
-		if err := send("://not-a-url", "x", time.Second, json.Marshal, payload); err == nil {
-			t.Error("err = nil, want a request error for an invalid endpoint")
-		}
-	})
-
-	t.Run("unreachable endpoint", func(t *testing.T) {
-		server := httptest.NewServer(http.NotFoundHandler())
-		server.Close() // nothing listens on this URL any more
-		if err := send(server.URL, "x", time.Second, json.Marshal, payload); err == nil {
-			t.Error("err = nil, want a connection error for a closed endpoint")
-		}
-	})
 }
