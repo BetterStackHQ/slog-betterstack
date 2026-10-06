@@ -1,4 +1,9 @@
 package slogbetterstack
 
-const name = "samber/slog-betterstack"
-const version = "VERSION" // replaced by .github/workflows/release.yml
+// name identifies this library in the User-Agent header and in the "logger.name" field of every
+// record. It stays "<GitHub owner>/<repository>", the convention the library has always used.
+const name = "BetterStackHQ/slog-betterstack"
+
+// version is the latest released version and is sent in the "logger.version" field of every
+// record. The Release workflow bumps it and tags the commit, so edit it only there.
+const version = "1.4.4"
