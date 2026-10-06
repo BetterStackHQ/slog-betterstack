@@ -38,8 +38,10 @@ const (
 	dropReportInterval = 5 * time.Second
 
 	// maxRecordBytes is Better Stack's limit on one record's uncompressed JSON. The endpoint
-	// accepts a request whose compressed body fits and discards such a record afterwards
-	// without a word, so the check has to happen here for the drop to be visible.
+	// accepts a request whose compressed body fits and then replaces such a record with a
+	// notice row in the source. Checking here saves uploading megabytes that cannot land,
+	// reports the drop where the application can see it and keeps Stats honest instead of
+	// counting the record as sent.
 	maxRecordBytes = 10 << 20
 )
 
