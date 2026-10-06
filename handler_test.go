@@ -51,7 +51,7 @@ func newServer(t *testing.T, respond responder) (*httptest.Server, <-chan reques
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			defer unzipped.Close()
+			defer func() { _ = unzipped.Close() }()
 			body = unzipped
 		}
 		raw, err := io.ReadAll(body)

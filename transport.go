@@ -297,7 +297,7 @@ func (t *transport) upload(records []map[string]any) {
 				t.drop(&t.stats.droppedRejected, len(records), fmt.Errorf("slog-betterstack: Better Stack rejected %s: %s", plural(len(records), "record"), status))
 				return
 			}
-			err = fmt.Errorf("Better Stack answered %s", status)
+			err = fmt.Errorf("the server answered %s", status)
 			retryAfter = parseRetryAfter(header.Get("Retry-After"))
 		}
 
