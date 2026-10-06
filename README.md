@@ -1,227 +1,176 @@
+# [Better Stack](https://betterstack.com/logs) Go client
 
-# slog: Betterstack handler
+[![Better Stack dashboard](https://github.com/logtail/logtail-python/assets/10132717/e2a1196b-7924-4abc-9b85-055e17b5d499)](https://betterstack.com/logs)
 
-[![tag](https://img.shields.io/github/tag/samber/slog-betterstack.svg)](https://github.com/samber/slog-betterstack/releases)
-![Go Version](https://img.shields.io/badge/Go-%3E%3D%201.21-%23007d9c)
-[![GoDoc](https://godoc.org/github.com/samber/slog-betterstack?status.svg)](https://pkg.go.dev/github.com/samber/slog-betterstack)
-![Build Status](https://github.com/samber/slog-betterstack/actions/workflows/test.yml/badge.svg)
-[![Go report](https://goreportcard.com/badge/github.com/samber/slog-betterstack)](https://goreportcard.com/report/github.com/samber/slog-betterstack)
-[![Coverage](https://img.shields.io/codecov/c/github/samber/slog-betterstack)](https://codecov.io/gh/samber/slog-betterstack)
-[![Contributors](https://img.shields.io/github/contributors/samber/slog-betterstack)](https://github.com/samber/slog-betterstack/graphs/contributors)
-[![License](https://img.shields.io/github/license/samber/slog-betterstack)](./LICENSE)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/BetterStackHQ/slog-betterstack.svg)](https://pkg.go.dev/github.com/BetterStackHQ/slog-betterstack)
+[![build](https://github.com/BetterStackHQ/slog-betterstack/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/BetterStackHQ/slog-betterstack/actions/workflows/main.yml)
 
-A [Betterstack](https://betterstack.com) Handler for [slog](https://pkg.go.dev/log/slog) Go library.
+Experience SQL-compatible structured log management based on ClickHouse. [Learn more ⇗](https://betterstack.com/logs)
 
-<div align="center">
-  <hr>
-  <sup><b>Sponsored by:</b></sup>
-  <br>
-  <a href="https://cast.ai/samuel">
-    <div>
-      <img src="https://github.com/user-attachments/assets/502f8fa8-e7e8-4754-a51f-036d0443e694" width="200" alt="Cast AI">
-    </div>
-    <div>
-      Cut Kubernetes & AI costs, boost application stability
-    </div>
-  </a>
-  <br>
-  <a href="https://www.dash0.com?utm_campaign=148395251-samber%20github%20sponsorship&utm_source=github&utm_medium=sponsorship&utm_content=samber">
-    <div>
-      <img src="https://github.com/user-attachments/assets/b1f2e876-0954-4dc3-824d-935d29ba8f3f" width="200" alt="Dash0">
-    </div>
-    <div>
-      100% OpenTelemetry-native observability platform<br>Simple to use, built on open standards, and designed for full cost control
-    </div>
-  </a>
-  <hr>
-</div>
+A [`log/slog`](https://pkg.go.dev/log/slog) handler that sends the logs of your Go application to Better Stack.
 
-**See also:**
+## Documentation
 
-- [slog-multi](https://github.com/samber/slog-multi): `slog.Handler` chaining, fanout, routing, failover, load balancing...
-- [slog-formatter](https://github.com/samber/slog-formatter): `slog` attribute formatting
-- [slog-sampling](https://github.com/samber/slog-sampling): `slog` sampling policy
-- [slog-mock](https://github.com/samber/slog-mock): `slog.Handler` for test purposes
+[Getting started ⇗](https://betterstack.com/docs/logs/go/)
 
-**HTTP middlewares:**
-
-- [slog-gin](https://github.com/samber/slog-gin): Gin middleware for `slog` logger
-- [slog-echo](https://github.com/samber/slog-echo): Echo middleware for `slog` logger
-- [slog-fiber](https://github.com/samber/slog-fiber): Fiber middleware for `slog` logger
-- [slog-chi](https://github.com/samber/slog-chi): Chi middleware for `slog` logger
-- [slog-http](https://github.com/samber/slog-http): `net/http` middleware for `slog` logger
-
-**Loggers:**
-
-- [slog-zap](https://github.com/samber/slog-zap): A `slog` handler for `Zap`
-- [slog-zerolog](https://github.com/samber/slog-zerolog): A `slog` handler for `Zerolog`
-- [slog-logrus](https://github.com/samber/slog-logrus): A `slog` handler for `Logrus`
-
-**Log sinks:**
-
-- [slog-datadog](https://github.com/samber/slog-datadog): A `slog` handler for `Datadog`
-- [slog-betterstack](https://github.com/samber/slog-betterstack): A `slog` handler for `Betterstack`
-- [slog-rollbar](https://github.com/samber/slog-rollbar): A `slog` handler for `Rollbar`
-- [slog-loki](https://github.com/samber/slog-loki): A `slog` handler for `Loki`
-- [slog-sentry](https://github.com/samber/slog-sentry): A `slog` handler for `Sentry`
-- [slog-syslog](https://github.com/samber/slog-syslog): A `slog` handler for `Syslog`
-- [slog-logstash](https://github.com/samber/slog-logstash): A `slog` handler for `Logstash`
-- [slog-fluentd](https://github.com/samber/slog-fluentd): A `slog` handler for `Fluentd`
-- [slog-graylog](https://github.com/samber/slog-graylog): A `slog` handler for `Graylog`
-- [slog-quickwit](https://github.com/samber/slog-quickwit): A `slog` handler for `Quickwit`
-- [slog-slack](https://github.com/samber/slog-slack): A `slog` handler for `Slack`
-- [slog-telegram](https://github.com/samber/slog-telegram): A `slog` handler for `Telegram`
-- [slog-mattermost](https://github.com/samber/slog-mattermost): A `slog` handler for `Mattermost`
-- [slog-microsoft-teams](https://github.com/samber/slog-microsoft-teams): A `slog` handler for `Microsoft Teams`
-- [slog-webhook](https://github.com/samber/slog-webhook): A `slog` handler for `Webhook`
-- [slog-kafka](https://github.com/samber/slog-kafka): A `slog` handler for `Kafka`
-- [slog-nats](https://github.com/samber/slog-nats): A `slog` handler for `NATS`
-- [slog-parquet](https://github.com/samber/slog-parquet): A `slog` handler for `Parquet` + `Object Storage`
-- [slog-channel](https://github.com/samber/slog-channel): A `slog` handler for Go channels
-
-## 🚀 Install
+## Install
 
 ```sh
-go get github.com/samber/slog-betterstack
+go get github.com/BetterStackHQ/slog-betterstack
 ```
 
-**Compatibility**: go >= 1.21
+Go 1.21 or newer.
 
-No breaking changes will be made to exported APIs before v2.0.0.
-
-## 💡 Usage
-
-GoDoc: [https://pkg.go.dev/github.com/samber/slog-betterstack](https://pkg.go.dev/github.com/samber/slog-betterstack)
-
-### Handler options
+## Usage
 
 ```go
-type Option struct {
-  // log level (default: debug)
-  Level     slog.Leveler
+package main
 
-  // token
-  Token   string
-  // optional: endpoint
-  Endpoint string
-  // default: 10s
-  Timeout time.Duration
-
-  // optional: customize record builder
-  Converter Converter
-  // optional: custom marshaler
-  Marshaler func(v any) ([]byte, error)
-  // optional: fetch attributes from context
-  AttrFromContext []func(ctx context.Context) []slog.Attr
-
-  // optional: see slog.HandlerOptions
-  AddSource   bool
-  ReplaceAttr func(groups []string, a slog.Attr) slog.Attr
-}
-```
-
-Other global parameters:
-
-```go
-slogbetterstack.SourceKey = "runtime"
-slogbetterstack.ContextKey = "context"
-slogbetterstack.ErrorKeys = []string{"error", "err"}
-```
-
-### Example
-
-```go
 import (
-	"fmt"
-	"net/http"
-	"time"
-
-	slogbetterstack "github.com/samber/slog-betterstack"
-
 	"log/slog"
+
+	slogbetterstack "github.com/BetterStackHQ/slog-betterstack"
 )
 
 func main() {
-	logger := slog.New(slogbetterstack.Option{Level: slog.LevelDebug, Token: "xxxxx"}.NewBetterstackHandler())
-	logger = logger.With("release", "v1.0.0")
+	logger := slog.New(
+		slogbetterstack.Option{
+			Token:    "$SOURCE_TOKEN",
+			Endpoint: "https://$INGESTING_HOST/",
+		}.NewBetterstackHandler(),
+	)
 
-	logger.
-		With(
-			slog.Group("user",
-				slog.String("id", "user-123"),
-				slog.Time("created_at", time.Now()),
-			),
-		).
-		With("error", fmt.Errorf("an error")).
-		Error("a message", slog.Int("count", 1))
+	logger.Info("Hello from Better Stack!", "service", "UserService")
+}
+```
+
+Find the source token and the ingesting host of your source in Better Stack → Sources.
+
+Logs are sent asynchronously. For short-lived programs, such as CLI tools or one-off scripts, give
+the handler a moment to finish sending before the process exits, for example with
+`time.Sleep(5 * time.Second)` after the last log line. Long-running services are not affected.
+
+### Options
+
+```go
+type Option struct {
+	// log level (default: debug)
+	Level slog.Leveler
+
+	// token
+	Token string
+	// optional: endpoint
+	Endpoint string
+	// default: 10s
+	Timeout time.Duration
+
+	// optional: customize record builder
+	Converter Converter
+	// optional: custom marshaler
+	Marshaler func(v any) ([]byte, error)
+	// optional: fetch attributes from context
+	AttrFromContext []func(ctx context.Context) []slog.Attr
+
+	// optional: see slog.HandlerOptions
+	AddSource   bool
+	ReplaceAttr func(groups []string, a slog.Attr) slog.Attr
+}
+```
+
+Package-level settings:
+
+```go
+slogbetterstack.SourceKey = "runtime"              // where AddSource puts the call site
+slogbetterstack.ContextKey = "extra"               // where attributes are nested
+slogbetterstack.ErrorKeys = []string{"error", "err"} // attributes expanded as errors
+```
+
+### Structured data
+
+```go
+logger := slog.New(slogbetterstack.Option{Level: slog.LevelDebug, Token: "$SOURCE_TOKEN"}.NewBetterstackHandler())
+logger = logger.With("release", "v1.0.0")
+
+logger.
+	With(
+		slog.Group("user",
+			slog.String("id", "user-123"),
+			slog.Time("created_at", time.Now()),
+		),
+	).
+	With("error", fmt.Errorf("an error")).
+	Error("a message", slog.Int("count", 1))
+```
+
+The record above arrives in Better Stack as:
+
+```json
+{
+  "dt": "2026-10-06T09:50:54.721381Z",
+  "level": "ERROR",
+  "message": "a message",
+  "logger.name": "BetterStackHQ/slog-betterstack",
+  "logger.version": "1.4.4",
+  "extra": {
+    "release": "v1.0.0",
+    "user": {"id": "user-123", "created_at": "2026-10-06T11:50:54.721344+02:00"},
+    "error": {"kind": "*errors.errorString", "error": "an error", "stack": null},
+    "count": 1
+  }
 }
 ```
 
 ### Tracing
 
-Import the samber/slog-otel library.
+Attach trace and span ids from the context with [samber/slog-otel](https://github.com/samber/slog-otel):
 
 ```go
 import (
-	slogbetterstack "github.com/samber/slog-betterstack"
+	slogbetterstack "github.com/BetterStackHQ/slog-betterstack"
 	slogotel "github.com/samber/slog-otel"
-	"go.opentelemetry.io/otel/sdk/trace"
 )
 
-func main() {
-	tp := trace.NewTracerProvider(
-		trace.WithSampler(trace.AlwaysSample()),
-	)
-	tracer := tp.Tracer("hello/world")
+logger := slog.New(
+	slogbetterstack.Option{
+		Token: "$SOURCE_TOKEN",
+		AttrFromContext: []func(ctx context.Context) []slog.Attr{
+			slogotel.ExtractOtelAttrFromContext([]string{"tracing"}, "trace_id", "span_id"),
+		},
+	}.NewBetterstackHandler(),
+)
 
-	ctx, span := tracer.Start(context.Background(), "foo")
-	defer span.End()
-
-	span.AddEvent("bar")
-
-	logger := slog.New(
-		slogbetterstack.Option{
-			// ...
-			AttrFromContext: []func(ctx context.Context) []slog.Attr{
-				slogotel.ExtractOtelAttrFromContext([]string{"tracing"}, "trace_id", "span_id"),
-			},
-		}.NewBetterstackHandler(),
-	)
-
-	logger.ErrorContext(ctx, "a message")
-}
+logger.ErrorContext(ctx, "a message")
 ```
 
-## 🤝 Contributing
+To log to Better Stack and somewhere else at the same time, combine handlers with
+[samber/slog-multi](https://github.com/samber/slog-multi) or, from Go 1.26, `slog.NewMultiHandler`.
 
-- Ping me on Twitter [@samuelberthe](https://twitter.com/samuelberthe) (DMs, mentions, whatever :))
-- Fork the [project](https://github.com/samber/slog-betterstack)
-- Fix [open issues](https://github.com/samber/slog-betterstack/issues) or request new features
+## Upgrading from samber/slog-betterstack
 
-Don't hesitate ;)
+This repository continues [samber/slog-betterstack](https://github.com/samber/slog-betterstack),
+which Better Stack maintains as its official Go client from version 1.5.0 on. The API and the
+shape of the logs are unchanged, so upgrading means replacing the import path:
 
-```bash
-# Install some dev dependencies
-make tools
-
-# Run tests
-make test
-# or
-make watch-test
+```sh
+go get github.com/BetterStackHQ/slog-betterstack@latest
+go mod edit -droprequire github.com/samber/slog-betterstack
 ```
 
-## 👤 Contributors
+```go
+import slogbetterstack "github.com/BetterStackHQ/slog-betterstack"
+```
 
-![Contributors](https://contrib.rocks/image?repo=samber/slog-betterstack)
+## Need help?
 
-## 💫 Show your support
+Please let us know at [hello@betterstack.com](mailto:hello@betterstack.com). We're happy to help!
 
-Give a ⭐️ if this project helped you!
+## Credits
 
-[![GitHub Sponsors](https://img.shields.io/github/sponsors/samber?style=for-the-badge)](https://github.com/sponsors/samber)
+slog-betterstack was created and maintained by [Samuel Berthe](https://github.com/samber) as part
+of his [slog ecosystem](https://github.com/samber?tab=repositories&q=slog) and released under the
+MIT license. Thank you, Samuel! ❤️
 
-## 📝 License
+---
 
-Copyright © 2023 [Samuel Berthe](https://github.com/samber).
-
-This project is [MIT](./LICENSE) licensed.
+[MIT license](LICENSE), [example project](example-project/)
