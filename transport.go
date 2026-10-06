@@ -36,6 +36,11 @@ const (
 	maxBackoff         = 30 * time.Second
 	maxRetryAfter      = time.Minute
 	dropReportInterval = 5 * time.Second
+
+	// maxRecordBytes is Better Stack's limit on one record's uncompressed JSON. The endpoint
+	// accepts a request whose compressed body fits and discards such a record afterwards
+	// without a word, so the check has to happen here for the drop to be visible.
+	maxRecordBytes = 10 << 20
 )
 
 // Stats counts what happened to the records handed to a handler. Once Close has returned,
@@ -275,6 +280,18 @@ func (t *transport) upload(records []map[string]any) {
 	body, err := t.option.Marshaler(records)
 	if err != nil {
 		t.drop(&t.stats.droppedRejected, len(records), fmt.Errorf("slog-betterstack: dropped %s that could not be encoded: %w", plural(len(records), "record"), err))
+		return
+	}
+	if len(body) > maxRecordBytes {
+		// Too big for a request body as well as for a single record. Split until the records
+		// that are over the limit on their own stand alone, and drop just those.
+		if len(records) > 1 {
+			half := len(records) / 2
+			t.upload(records[:half])
+			t.upload(records[half:])
+			return
+		}
+		t.drop(&t.stats.droppedOversize, 1, fmt.Errorf("slog-betterstack: dropped a record of %d bytes, larger than the %d bytes Better Stack accepts", len(body), maxRecordBytes))
 		return
 	}
 	if !t.option.DisableCompression {
