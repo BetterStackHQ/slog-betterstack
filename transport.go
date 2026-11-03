@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -172,7 +173,7 @@ func (t *transport) run() {
 
 	var (
 		batch   []map[string]any
-		pending []chan struct{} // uploads dispatched since the last Flush
+		pending []chan struct{} // uploads still in flight, including those awaited by earlier Flush calls
 		timer   = time.NewTimer(time.Hour)
 		timerC  <-chan time.Time // nil while no partial batch is waiting
 	)
@@ -228,8 +229,10 @@ func (t *transport) run() {
 		case request := <-t.flushes:
 			drain()
 			dispatch()
-			uploads := pending
-			pending = nil
+			pending = settled(pending)
+			// Each Flush must wait for earlier uploads, even if another Flush already awaits
+			// them. Copy the slice so later dispatches cannot change this waiter's snapshot.
+			uploads := slices.Clone(pending)
 			go func() {
 				for _, done := range uploads {
 					<-done
