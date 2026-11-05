@@ -1,0 +1,201 @@
+name: E2E
+
+# Proves that the client still delivers logs to Better Stack. Every job creates its own go source through the Telemetry
+# API, warms it up, runs example-project (what its doc comment tells customers to run) with that source's token and
+# ingesting host, reads the stored rows back through the testing team's SQL API connection, checks them exactly
+# against e2e/expected.json (nothing missing, extra or duplicated), and deletes the source again, together with
+# sources of earlier runs left behind for more than 3 hours. e2e/plan.sh plans three legs:
+#   floor   the Go of go.mod's go directive, at its newest patch release, with the slog-common version go.mod requires
+#   latest  the newest stable Go with the newest slog-common release on the Go module proxy
+#   canary  the newest Go release candidate or beta when one is newer than the stable release (otherwise the stable
+#           release again, as the job name says), with slog-common's newest pre-release when there is one
+# The floor leg runs on the oldest Ubuntu image GitHub offers, latest and canary on ubuntu-latest, so a new runner image
+# is covered as well.
+# Every job checks, before it creates a source, that the example binary was built with the planned Go, from the
+# planned client (the checkout, or the release on the schedule) and with the planned slog-common, and writes them into
+# its summary.
+# Pushes to main and pull requests build the example as the package of this module, so it compiles the checkout's
+# code. The daily schedule builds it the way a customer's own program builds: as a module of its own that requires the
+# newest slog-betterstack release from the Go module proxy, which is what a customer gets today. A failure on main or
+# on the schedule files a Linear issue (notify_linear_failure.yml), at low priority when only the canary failed.
+# Pull requests from forks run only the plan: they get no secrets, so they cannot create a source.
+#
+# Secrets: TEST_TEAM_TELEMETRY_API, TEST_TEAM_CONNECTION_USERNAME, TEST_TEAM_CONNECTION_PASSWORD (Better Stack's E2E
+# testing team), LINEAR_* (see notify_linear_failure.yml).
+#
+# One leg, or exact versions: Actions → E2E → Run workflow, pick the leg and optionally set go-version (e.g. 1.24.5 or
+# 1.28rc1) or slog-common-version (e.g. v0.21.0), which replace the planned versions of every leg that runs. That is
+# how a failure is bisected to one release.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      leg:
+        description: 'Leg to run'
+        type: choice
+        options: [all, floor, latest, canary]
+        default: all
+      source:
+        description: 'checkout: the example built from this checkout. proxy: built against the newest release on the Go module proxy, what a customer gets'
+        type: choice
+        options: [checkout, proxy]
+        default: checkout
+      go-version:
+        description: 'One exact Go version (e.g. 1.24.5 or 1.28rc1) instead of the planned one'
+        type: string
+      slog-common-version:
+        description: 'One exact github.com/samber/slog-common version (e.g. v0.21.0) instead of the planned one'
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # -eo pipefail: a failed command in front of a pipe fails the step.
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+
+    steps:
+      - name: "[Setup] Checkout code"
+        uses: actions/checkout@v7
+
+      - name: "[Setup] Plan the legs"
+        id: plan
+        env:
+          LEG: ${{ inputs.leg || 'all' }}
+          GO_VERSION: ${{ inputs.go-version }}
+          SLOG_COMMON_VERSION: ${{ inputs.slog-common-version }}
+          # The schedule tests what a customer gets today, pushes and pull requests test the checkout.
+          CLIENT_FROM: ${{ github.event_name == 'schedule' && 'proxy' || inputs.source || 'checkout' }}
+        run: |
+          MATRIX=$(bash e2e/plan.sh)
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          jq . <<<"$MATRIX"
+
+  test:
+    needs: plan
+    name: ${{ matrix.name }}
+    # Forks and Dependabot get no repository secrets, so their pull requests run only the plan.
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    env:
+      LEG: ${{ matrix.leg }}
+      CLIENT_FROM: ${{ matrix.source }}
+      CLIENT: ${{ matrix.client }}
+      PLANNED_GO: ${{ matrix.go }}
+      PLANNED_SLOG_COMMON: ${{ matrix.slog_common }}
+
+    steps:
+      - name: "[Setup] Checkout code"
+        uses: actions/checkout@v7
+
+      # setup-go also sets GOTOOLCHAIN=local, so go never switches to a newer Go that a go.mod asks for: it fails
+      # instead. check-latest takes the newest patch release of the floor's minor rather than an older one the runner
+      # image has cached. Without the module cache, modules come from the module proxy, as in a customer's first build.
+      - name: "[Setup] Go ${{ matrix.go }}"
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.setup_go }}
+          check-latest: true
+          cache: false
+
+      # Before a source is created: an example that cannot even build with these versions needs no round trip.
+      - name: "[Verify] The example builds with the leg's versions"
+        run: bash e2e/example.sh build
+
+      - name: "[Verify] The build is the planned one"
+        run: bash e2e/example.sh verify
+
+      - name: "[Setup] Create a source"
+        id: source
+        uses: ./.github/actions/create-source
+        with:
+          api-token: ${{ secrets.TEST_TEAM_TELEMETRY_API }}
+          name: e2e-slog-gh${{ github.run_id }}a${{ github.run_attempt }}-${{ matrix.leg }}
+          platform: go
+
+      # The binary the previous steps built and checked, which is what `go run` builds. The example closes the handler
+      # and exits 1 when Better Stack did not accept every record.
+      - name: "[Test] Run the example project"
+        env:
+          BETTER_STACK_SOURCE_TOKEN: ${{ steps.source.outputs.token }}
+          BETTER_STACK_INGESTING_HOST: ${{ steps.source.outputs.ingesting-host }}
+        run: |
+          if ! out/example 2>&1 | tee out/example.log; then
+            echo "::error::The example project failed with $INSTALLED: $(tail -n 1 out/example.log)"
+            exit 1
+          fi
+
+      - name: "[Verify] Read the rows back"
+        uses: ./.github/actions/verify-logs
+        with:
+          connection-username: ${{ secrets.TEST_TEAM_CONNECTION_USERNAME }}
+          connection-password: ${{ secrets.TEST_TEAM_CONNECTION_PASSWORD }}
+          connect-host: ${{ steps.source.outputs.connect-host }}
+          collection: ${{ steps.source.outputs.collection }}
+          expected: e2e/expected.json
+
+      - name: "[Cleanup] Delete this job's source and stale ones of earlier runs"
+        if: ${{ always() }}
+        uses: ./.github/actions/cleanup-sources
+        with:
+          api-token: ${{ secrets.TEST_TEAM_TELEMETRY_API }}
+          prefix: e2e-slog-
+          id: ${{ steps.source.outputs.id }}
+
+      - name: "[Report] Job summary"
+        if: ${{ always() }}
+        run: |
+          if [ -f out/summary.md ]; then
+            { echo; cat out/summary.md; } >> "$GITHUB_STEP_SUMMARY"
+            # The Linear issue names the job and links the run, so it gets the versions, the read-back and the
+            # cleanup only when that left something behind. Without a read-back summary the notifier takes the
+            # job's ::error:: lines instead, which name the versions.
+            mkdir -p report
+            { cat out/versions.md; echo; cat out/summary.md; } > report/summary.md
+            if grep -q '❌' out/cleanup.md 2>/dev/null; then { echo; cat out/cleanup.md; } >> report/summary.md; fi
+          else
+            { echo; echo "❌ Stopped before the rows were read back, see the failed step."; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f out/cleanup.md ]; then { echo; cat out/cleanup.md; } >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: "[Report] Hand the summary to the Linear issue"
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-summary-${{ matrix.name }}
+          path: report/summary.md
+          if-no-files-found: ignore
+          retention-days: 7
+          # A re-run attempt uploads under the same name.
+          overwrite: true
+
+  notify-linear:
+    if: ${{ failure() && (github.ref == 'refs/heads/main' || github.event_name == 'schedule') }}
+    needs: [test]
+    # The notifier reads the failed jobs, their summary artifacts and their annotations.
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    uses: ./.github/workflows/notify_linear_failure.yml
+    with:
+      job_summaries: true
+    secrets: inherit

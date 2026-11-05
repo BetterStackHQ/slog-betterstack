@@ -1,0 +1,17 @@
+[
+  {
+    "level": "INFO",
+    "message": "Starting user service.",
+    "contains": {"logger.name": "BetterStackHQ/slog-betterstack", "extra": {"release": "v1.0.0", "service": "UserService"}}
+  },
+  {
+    "level": "WARN",
+    "message": "User profile is incomplete.",
+    "contains": {"logger.name": "BetterStackHQ/slog-betterstack", "extra": {"release": "v1.0.0", "user": {"id": "user-123", "created_at": "2024-03-01T12:00:00Z"}, "missing": ["email", "phone"]}}
+  },
+  {
+    "level": "ERROR",
+    "message": "Unable to fetch user data.",
+    "contains": {"logger.name": "BetterStackHQ/slog-betterstack", "extra": {"release": "v1.0.0", "userID": 123, "error": {"kind": "*fmt.wrapError", "error": "fetching user user-123: context deadline exceeded"}}}
+  }
+]
